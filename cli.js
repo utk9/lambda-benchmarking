@@ -2,16 +2,18 @@
 
 'use strict';
 
-const path = require('path');
-const fs = require('fs');
 const _ = require('lodash');
+const fs = require('fs');
+const path = require('path');
 
+const AWS = require('aws-sdk');
 const archiver = require('archiver');
-const yargsOuter = require('yargs');
+const colors = require('colors');
+const jsonfile = require('jsonfile');
 const promisify = require('es6-promisify');
 const shortid = require('shortid');
-const jsonfile = require('jsonfile');
-const AWS = require('aws-sdk');
+const yargsOuter = require('yargs');
+
 
 AWS.config.loadFromPath('./cred.json');
 AWS.config.setPromisesDependency(Promise);
@@ -65,8 +67,7 @@ async function _uploadPackageToS3Async(lambdaId, size) {
         Key: `${lambdaId}Bundle`,
         Body: bundle,
     };
-    const data = await s3.upload(params).promise();
-    return data;
+    return await s3.upload(params).promise();
 }
 
 async function _createLambdaAsync(viaS3 = false, size) {
@@ -124,7 +125,16 @@ async function _updateLambdaAsync(lambdaToUpdate, viaS3 = false, size) {
         params.ZipFile = bundle;
     }
     // update lambda code
-    return lambda.updateFunctionCode(params).promise();
+    return await lambda.updateFunctionCode(params).promise();
+}
+
+async function _invokeLambdaAsync(lambdaId) {
+    var params = {
+        FunctionName: lambdaId,
+        InvocationType: "RequestResponse",
+    };
+    const data = await lambda.invoke(params).promise();
+    return data.Payload;
 }
 
 function _exitWithError(e) {
@@ -136,8 +146,17 @@ async function _timeFunctionExecution(func, ...args) {
     const hrstart = process.hrtime();
     const result = await func(...args);
     return {
-        result: result,
+        result,
         timeTaken: process.hrtime(hrstart),
+    }
+}
+
+async function _invokeLambdaInSeriesAsync(lambdaId, numInvocations) {
+    const range = _.range(numInvocations);
+    for (const i of range) {
+        const {result: invocationResult, timeTaken} = await _timeFunctionExecution(_invokeLambdaAsync, lambdaId);
+        console.log(`Invocation ${i+1} complete:`, invocationResult);
+        console.info("Execution time: %ds %dms".underline.green, timeTaken[0], timeTaken[1]/1000000);
     }
 }
 
@@ -156,6 +175,15 @@ async function runLambdaBenchmarkCliAsync() {
             describe: 'Crete or update Lambda',
             choices: _.values(Actions),
         })
+        .option('invoke', {
+            describe: 'Invoke Lambda after creating/updating?',
+            type: 'boolean',
+        })
+        .option('numInvocations', {
+            describe: 'Number of times to invoke lambda',
+            type: 'number',
+            default: 1,
+        })
         .help('help')
         .check(yargs => {
             const {hosted, action,  size} = yargs;
@@ -166,12 +194,15 @@ async function runLambdaBenchmarkCliAsync() {
         })
         .argv;
 
-    const {action, hosted, size} = config;
+    const {action, hosted, size, invoke, numInvocations} = config;
     if (action === Actions.create) {
         try {
             const {result, timeTaken} = await _timeFunctionExecution(_createLambdaAsync, hosted === HostedOptions.s3, size);
             console.log(`Lambda created: ${result.FunctionName}`);
-            console.info("Execution time: %ds %dms", timeTaken[0], timeTaken[1]/1000000);
+            console.info("Execution time: %ds %dms".underline.green, timeTaken[0], timeTaken[1]/1000000);
+            if (invoke) {
+                _invokeLambdaInSeriesAsync(result.FunctionName, numInvocations);
+            }
         } catch (e) {
             _exitWithError(e);
         }
@@ -180,7 +211,10 @@ async function runLambdaBenchmarkCliAsync() {
             const lambdaToUpdate = await _getExisingLambdaAsync();
             const {result, timeTaken} = await _timeFunctionExecution(_updateLambdaAsync, lambdaToUpdate, hosted === HostedOptions.s3, size)
             console.log(`Lambda updated: ${result.FunctionName}`);
-            console.info("Execution time: %ds %dms", timeTaken[0], timeTaken[1]/1000000);
+            console.info("Execution time: %ds %dms".underline.green, timeTaken[0], timeTaken[1]/1000000);
+            if (invoke) {
+                _invokeLambdaInSeriesAsync(result.FunctionName, numInvocations);
+            }
         } catch (e) {
             _exitWithError(e);
         }
