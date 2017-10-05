@@ -17,6 +17,7 @@ AWS.config.loadFromPath('./cred.json');
 AWS.config.setPromisesDependency(Promise);
 
 const lambda = new AWS.Lambda();
+const s3 = new AWS.S3();
 
 const readFileAsync = promisify(fs.readFile);
 const readJsonFileAsync = promisify(jsonfile.readFile)
@@ -36,6 +37,23 @@ const Actions = {
     create: 'create',
     update: 'update',
 };
+
+async function _getUploadToS3Params(lambdaId) {
+    const packagePath = await createDeploymentPackageAsync(lambdaId);
+    const bundle = await readFileAsync(packagePath);
+
+    return {
+        Bucket: 'airtable-lambda-packages',
+        Key: `${lambdaId}bundle`,
+        Body: bundle,
+    }
+}
+
+async function _uploadPackageToS3(lambdaId) {
+    const params = await _getUploadToS3Params(lambdaId);
+    const data = await s3.upload(params).promise();
+    return data;
+}
 
 async function createDeploymentPackageAsync(lambdaId) {
     const outputPath = path.join(__dirname, 'lambda', 'deployment_packages', `${lambdaId}.zip`)
