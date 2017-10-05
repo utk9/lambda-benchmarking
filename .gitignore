@@ -2,3 +2,4 @@
 /node_modules/
 cred.json
 lambda/deployment_packages
+lambda_config.json
