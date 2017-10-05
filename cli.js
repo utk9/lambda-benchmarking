@@ -40,7 +40,7 @@ const Actions = {
     update: 'update',
 };
 
-async function createDeploymentPackageAsync(lambdaId) {
+async function createDeploymentPackageAsync(lambdaId, size = PackageSizes.medium) {
     const outputPath = path.join(__dirname, 'lambda', 'deployment_packages', `${lambdaId}.zip`)
     const output = fs.createWriteStream(outputPath);
     const zip = archiver('zip');
@@ -49,16 +49,16 @@ async function createDeploymentPackageAsync(lambdaId) {
         output.on('close', resolve);
         zip.on('error', reject);
         zip.pipe(output);
-        zip.glob('*', {
-            cwd: path.join(__dirname, 'lambda', 'medium'),
+        zip.glob('**/*', {
+            cwd: path.join(__dirname, 'lambda', size),
         })
         zip.finalize();
     });
     return outputPath;
 }
 
-async function _uploadPackageToS3Async(lambdaId) {
-    const packagePath = await createDeploymentPackageAsync(lambdaId);
+async function _uploadPackageToS3Async(lambdaId, size) {
+    const packagePath = await createDeploymentPackageAsync(lambdaId, size);
     const bundle = await readFileAsync(packagePath);
     const params = {
         Bucket: S3_BUCKET,
@@ -69,7 +69,7 @@ async function _uploadPackageToS3Async(lambdaId) {
     return data;
 }
 
-async function _createLambdaAsync(viaS3 = false) {
+async function _createLambdaAsync(viaS3 = false, size) {
     const lambdaId = shortid.generate();
 
     const {Role} = await readJsonFileAsync('lambda_config.json');
@@ -82,13 +82,13 @@ async function _createLambdaAsync(viaS3 = false) {
         Runtime: 'nodejs4.3',
     }
     if (viaS3) {
-        const {Bucket, Key} = await _uploadPackageToS3Async(lambdaId);
+        const {Bucket, Key} = await _uploadPackageToS3Async(lambdaId, size);
         params.Code = {
             S3Bucket: Bucket,
             S3Key: Key,
         }
     } else {
-        const packagePath = await createDeploymentPackageAsync(lambdaId);
+        const packagePath = await createDeploymentPackageAsync(lambdaId, size);
         const bundle = await readFileAsync(packagePath);
         params.Code = {
             ZipFile: bundle,
@@ -107,7 +107,7 @@ async function _getExisingLambdaAsync() {
     return Functions[0];
 }
 
-async function _updateLambdaAsync(lambdaToUpdate, viaS3 = false) {
+async function _updateLambdaAsync(lambdaToUpdate, viaS3 = false, size) {
     const {FunctionName: lambdaId} = lambdaToUpdate;
 
     // generate params
@@ -115,11 +115,11 @@ async function _updateLambdaAsync(lambdaToUpdate, viaS3 = false) {
         FunctionName: lambdaId,
     }
     if (viaS3) {
-        const {Bucket, Key} = await _uploadPackageToS3Async(lambdaId);
+        const {Bucket, Key} = await _uploadPackageToS3Async(lambdaId, size);
         params.S3Bucket = Bucket;
         params.S3Key = Key;
     } else {
-        const packagePath = await createDeploymentPackageAsync(lambdaId);
+        const packagePath = await createDeploymentPackageAsync(lambdaId, size);
         const bundle = await readFileAsync(packagePath);
         params.ZipFile = bundle;
     }
@@ -158,18 +158,18 @@ async function runLambdaBenchmarkCliAsync() {
         })
         .help('help')
         .check(yargs => {
-            const {hosted, action} = yargs;
-            if (!hosted || !action) {
+            const {hosted, action,  size} = yargs;
+            if (!hosted || !action || !size) {
                 throw new Error('Missing options');
             }
             return true;
         })
         .argv;
 
-    const {action, hosted} = config;
+    const {action, hosted, size} = config;
     if (action === Actions.create) {
         try {
-            const {result, timeTaken} = await _timeFunctionExecution(_createLambdaAsync, hosted === HostedOptions.s3);
+            const {result, timeTaken} = await _timeFunctionExecution(_createLambdaAsync, hosted === HostedOptions.s3, size);
             console.log(`Lambda created: ${result.FunctionName}`);
             console.info("Execution time: %ds %dms", timeTaken[0], timeTaken[1]/1000000);
         } catch (e) {
@@ -178,7 +178,7 @@ async function runLambdaBenchmarkCliAsync() {
     } else if (action === Actions.update) {
         try {
             const lambdaToUpdate = await _getExisingLambdaAsync();
-            const {result, timeTaken} = await _timeFunctionExecution(_updateLambdaAsync, lambdaToUpdate, hosted === HostedOptions.s3)
+            const {result, timeTaken} = await _timeFunctionExecution(_updateLambdaAsync, lambdaToUpdate, hosted === HostedOptions.s3, size)
             console.log(`Lambda updated: ${result.FunctionName}`);
             console.info("Execution time: %ds %dms", timeTaken[0], timeTaken[1]/1000000);
         } catch (e) {
