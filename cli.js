@@ -54,7 +54,7 @@ async function createDeploymentPackageAsync(lambdaId) {
     return outputPath;
 }
 
-async function getCreateFunctionParamsAsync(size) {
+async function getCreateParamsAsync(size) {
     const lambdaId = shortid.generate();
     const packagePath = await createDeploymentPackageAsync(lambdaId);
     const bundleAndRole = await Promise.all([readFileAsync(packagePath), readJsonFileAsync('lambda_config.json')]);
@@ -69,17 +69,34 @@ async function getCreateFunctionParamsAsync(size) {
     };
 }
 
-function invokeLambda() {
+async function createLambdaAsync(size) {
+    const params = await getCreateParamsAsync(size);
+    return await lambda.createFunction(params).promise();
 }
 
-async function createLambdaAsync(size) {
-    const params = await getCreateFunctionParamsAsync(size);
-    return lambda.createFunction(params).promise();
+// async function _getUpdateParams() {
+//     return {
+//         FunctionName:
+//     }
+// }
+
+async function _updateLambdaAsync() {
+    const params = await _getUpdateParams(size);
+    return lambda.updateFunctionCode(params)
 }
 
 function _exitWithError(e) {
     console.log(e.message, e.stack);
     process.exit(1);
+}
+
+async function _timeFunctionExecution(func) {
+    const hrstart = process.hrtime();
+    const result = await func();
+    return {
+        result: result,
+        timeTaken: process.hrtime(hrstart),
+    }
 }
 
 async function runLambdaBenchmarkCliAsync() {
@@ -109,11 +126,10 @@ async function runLambdaBenchmarkCliAsync() {
 
     const {action} = config;
     if (action === Actions.create) {
-        const start = new Date();
         try {
-            await createLambdaAsync();
-            const end = new Date();
-            console.log(`Time taken to create lambda: ${end-start}`);
+            const {result, timeTaken} = await _timeFunctionExecution(createLambdaAsync)
+            console.log(`Lambda created: ${result.FunctionName}`);
+            console.info("Execution time: %ds %dms", timeTaken[0], timeTaken[1]/1000000);
         } catch (e) {
             _exitWithError(e);
         }
