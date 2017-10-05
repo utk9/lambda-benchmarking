@@ -3,3 +3,6 @@
 cred.json
 lambda/deployment_packages
 lambda_config.json
+/lambda/small/node_modules/
+/lambda/medium/node_modules/
+/lambda/large/node_modules/
