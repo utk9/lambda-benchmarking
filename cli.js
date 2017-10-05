@@ -19,6 +19,8 @@ AWS.config.setPromisesDependency(Promise);
 const lambda = new AWS.Lambda();
 const s3 = new AWS.S3();
 
+const S3_BUCKET = 'airtable-lambda-packages';
+
 const readFileAsync = promisify(fs.readFile);
 const readJsonFileAsync = promisify(jsonfile.readFile)
 
@@ -38,23 +40,6 @@ const Actions = {
     update: 'update',
 };
 
-async function _getUploadToS3Params(lambdaId) {
-    const packagePath = await createDeploymentPackageAsync(lambdaId);
-    const bundle = await readFileAsync(packagePath);
-
-    return {
-        Bucket: 'airtable-lambda-packages',
-        Key: `${lambdaId}bundle`,
-        Body: bundle,
-    }
-}
-
-async function _uploadPackageToS3(lambdaId) {
-    const params = await _getUploadToS3Params(lambdaId);
-    const data = await s3.upload(params).promise();
-    return data;
-}
-
 async function createDeploymentPackageAsync(lambdaId) {
     const outputPath = path.join(__dirname, 'lambda', 'deployment_packages', `${lambdaId}.zip`)
     const output = fs.createWriteStream(outputPath);
@@ -65,42 +50,81 @@ async function createDeploymentPackageAsync(lambdaId) {
         zip.on('error', reject);
         zip.pipe(output);
         zip.glob('*', {
-            cwd: path.join(__dirname, 'lambda', 'small'),
+            cwd: path.join(__dirname, 'lambda', 'medium'),
         })
         zip.finalize();
     });
     return outputPath;
 }
 
-async function getCreateParamsAsync(size) {
-    const lambdaId = shortid.generate();
+async function _uploadPackageToS3Async(lambdaId) {
     const packagePath = await createDeploymentPackageAsync(lambdaId);
-    const bundleAndRole = await Promise.all([readFileAsync(packagePath), readJsonFileAsync('lambda_config.json')]);
-    const ZipFile = bundleAndRole[0];
-    const {Role} = bundleAndRole[1];
-    return {
-        Code: {ZipFile},
-        FunctionName: `test-function-${lambdaId}`,
-        Handler: "index.handler",
-        Role,
-        Runtime: "nodejs4.3",
+    const bundle = await readFileAsync(packagePath);
+    const params = {
+        Bucket: S3_BUCKET,
+        Key: `${lambdaId}Bundle`,
+        Body: bundle,
     };
+    const data = await s3.upload(params).promise();
+    return data;
 }
 
-async function createLambdaAsync(size) {
-    const params = await getCreateParamsAsync(size);
+async function _createLambdaAsync(viaS3 = false) {
+    const lambdaId = shortid.generate();
+
+    const {Role} = await readJsonFileAsync('lambda_config.json');
+
+    // generate params
+    const params = {
+        FunctionName: lambdaId,
+        Handler: 'index.handler',
+        Role,
+        Runtime: 'nodejs4.3',
+    }
+    if (viaS3) {
+        const {Bucket, Key} = await _uploadPackageToS3Async(lambdaId);
+        params.Code = {
+            S3Bucket: Bucket,
+            S3Key: Key,
+        }
+    } else {
+        const packagePath = await createDeploymentPackageAsync(lambdaId);
+        const bundle = await readFileAsync(packagePath);
+        params.Code = {
+            ZipFile: bundle,
+        }
+    }
+    // upload to lambda
     return await lambda.createFunction(params).promise();
 }
 
-// async function _getUpdateParams() {
-//     return {
-//         FunctionName:
-//     }
-// }
+async function _getExisingLambdaAsync() {
+    // get any 1 lambda to update (for now)
+    const {Functions} = await lambda.listFunctions({MaxItems: 1}).promise();
+    if (Functions.length === 0) {
+        throw new Error('There are no lambdas to update.');
+    }
+    return Functions[0];
+}
 
-async function _updateLambdaAsync() {
-    const params = await _getUpdateParams(size);
-    return lambda.updateFunctionCode(params)
+async function _updateLambdaAsync(lambdaToUpdate, viaS3 = false) {
+    const {FunctionName: lambdaId} = lambdaToUpdate;
+
+    // generate params
+    const params = {
+        FunctionName: lambdaId,
+    }
+    if (viaS3) {
+        const {Bucket, Key} = await _uploadPackageToS3Async(lambdaId);
+        params.S3Bucket = Bucket;
+        params.S3Key = Key;
+    } else {
+        const packagePath = await createDeploymentPackageAsync(lambdaId);
+        const bundle = await readFileAsync(packagePath);
+        params.ZipFile = bundle;
+    }
+    // update lambda code
+    return lambda.updateFunctionCode(params).promise();
 }
 
 function _exitWithError(e) {
@@ -108,9 +132,9 @@ function _exitWithError(e) {
     process.exit(1);
 }
 
-async function _timeFunctionExecution(func) {
+async function _timeFunctionExecution(func, ...args) {
     const hrstart = process.hrtime();
-    const result = await func();
+    const result = await func(...args);
     return {
         result: result,
         timeTaken: process.hrtime(hrstart),
@@ -134,26 +158,32 @@ async function runLambdaBenchmarkCliAsync() {
         })
         .help('help')
         .check(yargs => {
-            // const {size, hosted, action} = yargs;
-            // if (!size || !hosted || !action) {
-            //     throw new Error('Missing options');
-            // }
+            const {hosted, action} = yargs;
+            if (!hosted || !action) {
+                throw new Error('Missing options');
+            }
             return true;
         })
         .argv;
 
-    const {action} = config;
+    const {action, hosted} = config;
     if (action === Actions.create) {
         try {
-            const {result, timeTaken} = await _timeFunctionExecution(createLambdaAsync)
+            const {result, timeTaken} = await _timeFunctionExecution(_createLambdaAsync, hosted === HostedOptions.s3);
             console.log(`Lambda created: ${result.FunctionName}`);
             console.info("Execution time: %ds %dms", timeTaken[0], timeTaken[1]/1000000);
         } catch (e) {
             _exitWithError(e);
         }
     } else if (action === Actions.update) {
-        // TODO: implement this
-        _exitWithError(new Error("NOT IMPLEMENTED YET!"));
+        try {
+            const lambdaToUpdate = await _getExisingLambdaAsync();
+            const {result, timeTaken} = await _timeFunctionExecution(_updateLambdaAsync, lambdaToUpdate, hosted === HostedOptions.s3)
+            console.log(`Lambda updated: ${result.FunctionName}`);
+            console.info("Execution time: %ds %dms", timeTaken[0], timeTaken[1]/1000000);
+        } catch (e) {
+            _exitWithError(e);
+        }
     } else {
         yargsOuter.showHelp();
         _exitWithError(new Error("Invalid action"));
