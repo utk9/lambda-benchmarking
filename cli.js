@@ -61,7 +61,7 @@ async function _createDeploymentPackageAsync(lambdaId, size = PackageSizes.mediu
     return outputPath;
 }
 
-async function _uploadPackageToS3Async(bundle, size) {
+async function _uploadPackageToS3Async(bundle, lambdaId) {
     const params = {
         Bucket: S3_BUCKET,
         Key: `${lambdaId}Bundle`,
@@ -92,7 +92,7 @@ async function _createLambdaAsync(viaS3 = false, size) {
     timer.addCheckpointAndLog('Read bundle from file system');
 
     if (viaS3) {
-        const {Bucket, Key} = await _uploadPackageToS3Async(bundle, size);
+        const {Bucket, Key} = await _uploadPackageToS3Async(bundle, lambdaId);
         timer.addCheckpointAndLog('Uploaded package to S3');
         params.Code = {
             S3Bucket: Bucket,
@@ -136,13 +136,11 @@ async function _updateLambdaAsync(lambdaToUpdate, viaS3 = false, size) {
     timer.addCheckpointAndLog('Read bundle from file system');
 
     if (viaS3) {
-        const {Bucket, Key} = await _uploadPackageToS3Async(bundle, size);
+        const {Bucket, Key} = await _uploadPackageToS3Async(bundle, lambdaId);
         timer.addCheckpointAndLog('Uploaded package to S3');
         params.S3Bucket = Bucket;
         params.S3Key = Key;
     } else {
-        const packagePath = await _createDeploymentPackageAsync(lambdaId, size);
-        const bundle = await readFileAsync(packagePath);
         params.ZipFile = bundle;
     }
     // update lambda code
