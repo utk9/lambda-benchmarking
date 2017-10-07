@@ -5,13 +5,14 @@
 const _ = require('lodash');
 const fs = require('fs');
 const path = require('path');
+const zlib = require('zlib');
 
 const AWS = require('aws-sdk');
 const archiver = require('archiver');
 const colors = require('colors');
 const jsonfile = require('jsonfile');
 const promisify = require('es6-promisify');
-const shortid = require('shortid');;
+const shortid = require('shortid');
 
 const Timer = require('./timer');
 
@@ -49,7 +50,7 @@ exports.Actions = Actions;
 async function _createDeploymentPackageAsync(lambdaId, size = PackageSizes.medium) {
     const outputPath = path.join(__dirname, 'lambda', 'deployment_packages', `${lambdaId}.zip`)
     const output = fs.createWriteStream(outputPath);
-    const zip = archiver('zip');
+    const zip = archiver('zip', {zlib: { level: zlib.constants.Z_BEST_SPEED }});
     await new Promise((resolve, reject) => {
         output.on('close', resolve);
         zip.on('error', reject);
