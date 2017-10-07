@@ -50,14 +50,13 @@ async function _createDeploymentPackageAsync(lambdaId, size = PackageSizes.mediu
     const outputPath = path.join(__dirname, 'lambda', 'deployment_packages', `${lambdaId}.zip`)
     const output = fs.createWriteStream(outputPath);
     const zip = archiver('zip');
-
     await new Promise((resolve, reject) => {
         output.on('close', resolve);
         zip.on('error', reject);
         zip.pipe(output);
-        zip.glob('**/*', {
-            cwd: path.join(__dirname, 'lambda', size),
-        })
+        // TODO: read all files and/or folders
+        zip.file(path.join(__dirname, 'lambda', size, 'index.js'), { name: 'index.js' });
+        zip.directory(path.join(__dirname, 'lambda', size, 'node_modules/'), 'node_modules');
         zip.finalize();
     });
     return outputPath;
@@ -179,7 +178,7 @@ async function _invokeLambdaInSeriesAsync(lambdaId, numInvocations) {
     const timer = new Timer();
     for (const i of range) {
         await _invokeLambdaAsync(lambdaId);
-        timer.addCheckpointAndLog(`Invocation ${i}`);
+        timer.addCheckpointAndLog(`Invocation ${i+1}`);
     }
     timer.stop();
 }
